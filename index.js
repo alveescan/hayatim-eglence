@@ -7,7 +7,8 @@ const {
   EmbedBuilder,
   PermissionsBitField,
   ChannelType,
-  AttachmentBuilder
+  AttachmentBuilder,
+  ActivityType
 } = require("discord.js");
 
 const {
@@ -19,27 +20,53 @@ const { createCanvas, loadImage } = require("canvas");
 const fs = require("fs");
 const path = require("path");
 const express = require("express");
+const http = require("http");
 
 /* =========================
    WEB SERVER
 ========================= */
 const app = express();
+app.disable("x-powered-by");
+
+const STARTED_AT = Date.now();
 
 app.get("/", (req, res) => {
-  res.status(200).send("Bot aktif");
+  res.status(200).json({
+    ok: true,
+    message: "Bot aktif",
+    uptimeSeconds: Math.floor(process.uptime()),
+    timestamp: new Date().toISOString()
+  });
 });
 
 app.get("/health", (req, res) => {
-  res.status(200).send("OK");
+  res.status(200).json({
+    ok: true,
+    status: "healthy",
+    botReady: client?.isReady?.() || false,
+    uptimeSeconds: Math.floor(process.uptime()),
+    memoryMb: Math.round(process.memoryUsage().rss / 1024 / 1024),
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.get("/ping", (req, res) => {
+  res.status(200).send("pong");
 });
 
 app.use((req, res) => {
   res.status(200).send("Bot aktif");
 });
 
-app.listen(process.env.PORT || 3000, () => {
-  console.log(`Web server aktif: ${process.env.PORT || 3000}`);
+const PORT = Number(process.env.PORT) || 3000;
+const HOST = "0.0.0.0";
+
+const server = app.listen(PORT, HOST, () => {
+  console.log(`Web server aktif: http://${HOST}:${PORT}`);
 });
+
+server.keepAliveTimeout = 65000;
+server.headersTimeout = 66000;
 
 /* =========================
    DISCORD CLIENT
@@ -157,7 +184,6 @@ function drawRoundedImage(ctx, img, x, y, w, h, radius = 24) {
 }
 
 function drawVerticalFill(ctx, x, y, w, h, percent) {
-  // iç padding: görseldeki boş barın içine otursun diye
   const padX = Math.max(8, Math.round(w * 0.08));
   const padTop = Math.max(10, Math.round(h * 0.07));
   const padBottom = Math.max(10, Math.round(h * 0.03));
@@ -172,9 +198,9 @@ function drawVerticalFill(ctx, x, y, w, h, percent) {
 
   if (fillH > 0) {
     const grad = ctx.createLinearGradient(innerX, innerY, innerX, innerY + innerH);
-    grad.addColorStop(0, "#5b0013");
-    grad.addColorStop(0.45, "#7c0820");
-    grad.addColorStop(1, "#b50020");
+    grad.addColorStop(0, "#4a0012");
+    grad.addColorStop(0.45, "#680018");
+    grad.addColorStop(1, "#98001e");
 
     ctx.save();
     roundRect(ctx, innerX, innerY, innerW, innerH, Math.max(12, Math.round(innerW * 0.18)));
@@ -183,11 +209,10 @@ function drawVerticalFill(ctx, x, y, w, h, percent) {
     ctx.fillStyle = grad;
     ctx.fillRect(innerX, fillY, innerW, fillH);
 
-    // hafif parlama
     const gloss = ctx.createLinearGradient(innerX, fillY, innerX, fillY + fillH);
     gloss.addColorStop(0, "rgba(255,255,255,0.18)");
     gloss.addColorStop(0.25, "rgba(255,255,255,0.06)");
-    gloss.addColorStop(1, "rgba(255,255,255,0.00)");
+    gloss.addColorStop(1, "rgba(255,255,255,0)");
     ctx.fillStyle = gloss;
     ctx.fillRect(innerX, fillY, innerW, fillH);
 
@@ -262,7 +287,6 @@ async function buildShipCard(user1, user2, percent) {
 
   ctx.drawImage(background, 0, 0, width, height);
 
-  // Bu oranlar senin seçtiğin PNG’ye göre ayarlandı
   const leftBox = {
     x: Math.round(width * 0.089),
     y: Math.round(height * 0.247),
@@ -284,7 +308,6 @@ async function buildShipCard(user1, user2, percent) {
     h: Math.round(height * 0.543)
   };
 
-  // Avatarlar frame içine taşmadan otursun
   const avatarInset = Math.max(10, Math.round(width * 0.008));
 
   drawRoundedImage(
@@ -307,13 +330,9 @@ async function buildShipCard(user1, user2, percent) {
     Math.max(18, Math.round(width * 0.015))
   );
 
-  // Orta bar dolumu
   drawVerticalFill(ctx, barBox.x, barBox.y, barBox.w, barBox.h, percent);
-
-  // Yüzde yazısı
   drawPercentText(ctx, barBox.x, barBox.y, barBox.w, barBox.h, percent, width);
 
-  // Sağdaki kalp scale
   drawHeartProgress(
     ctx,
     Math.round(width * 0.585),
@@ -330,10 +349,15 @@ async function buildShipCard(user1, user2, percent) {
    READY
 ========================= */
 client.once("clientReady", async () => {
-  console.log(`${client.user.tag} olarak giriş yapildi.`);
+  console.log(`${client.user.tag} olarak giris yapildi.`);
 
   client.user.setPresence({
-    activities: [{ name: "eglence zamani" }],
+    activities: [
+      {
+        name: "eglence zamani",
+        type: ActivityType.Playing
+      }
+    ],
     status: "dnd"
   });
 
@@ -359,6 +383,22 @@ client.once("clientReady", async () => {
   }
 });
 
+client.on("shardDisconnect", (event, id) => {
+  console.warn(`Shard disconnect oldu | shard: ${id} | code: ${event?.code}`);
+});
+
+client.on("shardError", (error, id) => {
+  console.error(`Shard error | shard: ${id}`, error);
+});
+
+client.on("shardReconnecting", (id) => {
+  console.warn(`Shard yeniden baglaniyor | shard: ${id}`);
+});
+
+client.on("error", (err) => {
+  console.error("Discord client error:", err);
+});
+
 /* =========================
    SNIPE SYSTEM
 ========================= */
@@ -373,7 +413,7 @@ client.on("messageDelete", async (message) => {
       authorId: message.author?.id || "Bilinmiyor",
       avatar: message.author?.displayAvatarURL({ extension: "png", size: 256 }) || null,
       createdAt: Date.now(),
-      attachments: message.attachments?.map((a) => a.url) || []
+      attachments: [...(message.attachments?.values?.() || [])].map((a) => a.url)
     });
   } catch (err) {
     console.error("Snipe kayit hatasi:", err);
@@ -416,7 +456,7 @@ client.on("messageCreate", async (message) => {
       });
 
       client.user.setPresence({
-        activities: [{ name: "eglence zamani" }],
+        activities: [{ name: "eglence zamani", type: ActivityType.Playing }],
         status: "dnd"
       });
 
@@ -433,7 +473,7 @@ client.on("messageCreate", async (message) => {
       connection.destroy();
 
       client.user.setPresence({
-        activities: [{ name: "eglence zamani" }],
+        activities: [{ name: "eglence zamani", type: ActivityType.Playing }],
         status: "dnd"
       });
 
@@ -479,7 +519,7 @@ client.on("messageCreate", async (message) => {
 
       const embed = new EmbedBuilder()
         .setColor(0x5865f2)
-        .setTitle(`${target.username} kullanicisining avatari`)
+        .setTitle(`${target.username} kullanicisinin avatari`)
         .setImage(avatarURL)
         .setURL(avatarURL);
 
@@ -492,9 +532,7 @@ client.on("messageCreate", async (message) => {
         (args[0] ? await message.guild.members.fetch(args[0]).catch(() => null) : null) ||
         message.member;
 
-      if (!targetMember) {
-        targetMember = message.member;
-      }
+      if (!targetMember) targetMember = message.member;
 
       const spotifyActivity = targetMember.presence?.activities?.find(
         (activity) => activity.name === "Spotify" || activity.type === 2
@@ -618,35 +656,13 @@ client.on("messageCreate", async (message) => {
         .setTitle("Komut Menusu")
         .setDescription("Kullanilabilir komutlar asagida listelenmistir.")
         .addFields(
-          {
-            name: "Ses",
-            value: "`.join`\n`.leave`",
-            inline: true
-          },
-          {
-            name: "Mesaj",
-            value: "`.snipe`\n`.nuke`",
-            inline: true
-          },
-          {
-            name: "Kullanici",
-            value: "`.av`\n`.avatar`\n`.spotify`",
-            inline: true
-          },
-          {
-            name: "Eglence",
-            value: "`.ship`\n`.ship @kullanici`",
-            inline: true
-          },
-          {
-            name: "Bilgi",
-            value: "`.help`\n`.serverinfo`",
-            inline: true
-          }
+          { name: "Ses", value: "`.join`\n`.leave`", inline: true },
+          { name: "Mesaj", value: "`.snipe`\n`.nuke`", inline: true },
+          { name: "Kullanici", value: "`.av`\n`.avatar`\n`.spotify`", inline: true },
+          { name: "Eglence", value: "`.ship`\n`.ship @kullanici`", inline: true },
+          { name: "Bilgi", value: "`.help`\n`.serverinfo`", inline: true }
         )
-        .setFooter({
-          text: `Prefix: ${PREFIX}`
-        });
+        .setFooter({ text: `Prefix: ${PREFIX}` });
 
       return message.reply({ embeds: [embed] });
     }
@@ -672,46 +688,18 @@ client.on("messageCreate", async (message) => {
         .setTitle(guild.name)
         .setThumbnail(guild.iconURL({ extension: "png", size: 1024 }))
         .addFields(
-          {
-            name: "Sunucu ID",
-            value: guild.id,
-            inline: true
-          },
-          {
-            name: "Kurucu",
-            value: owner ? `${owner.user.tag}` : "Bilinmiyor",
-            inline: true
-          },
+          { name: "Sunucu ID", value: guild.id, inline: true },
+          { name: "Kurucu", value: owner ? `${owner.user.tag}` : "Bilinmiyor", inline: true },
           {
             name: "Kurulus Tarihi",
             value: `<t:${Math.floor(guild.createdTimestamp / 1000)}:F>`,
             inline: false
           },
-          {
-            name: "Uye Sayisi",
-            value: `${guild.memberCount}`,
-            inline: true
-          },
-          {
-            name: "Rol Sayisi",
-            value: `${guild.roles.cache.size}`,
-            inline: true
-          },
-          {
-            name: "Boost Seviyesi",
-            value: `${guild.premiumTier}`,
-            inline: true
-          },
-          {
-            name: "Boost Sayisi",
-            value: `${guild.premiumSubscriptionCount || 0}`,
-            inline: true
-          },
-          {
-            name: "Dogrulama Seviyesi",
-            value: `${guild.verificationLevel}`,
-            inline: true
-          },
+          { name: "Uye Sayisi", value: `${guild.memberCount}`, inline: true },
+          { name: "Rol Sayisi", value: `${guild.roles.cache.size}`, inline: true },
+          { name: "Boost Seviyesi", value: `${guild.premiumTier}`, inline: true },
+          { name: "Boost Sayisi", value: `${guild.premiumSubscriptionCount || 0}`, inline: true },
+          { name: "Dogrulama Seviyesi", value: `${guild.verificationLevel}`, inline: true },
           {
             name: "Kanallar",
             value: `Yazi: ${textChannels}\nSes: ${voiceChannels}\nKategori: ${categoryChannels}`,
@@ -738,7 +726,35 @@ process.on("uncaughtException", (err) => {
   console.error("Uncaught Exception:", err);
 });
 
+process.on("warning", (warning) => {
+  console.warn("Process warning:", warning);
+});
+
+process.on("SIGTERM", () => {
+  console.warn("SIGTERM alindi, kapaniyor...");
+  try {
+    server.close(() => {
+      process.exit(0);
+    });
+  } catch {
+    process.exit(0);
+  }
+});
+
+process.on("SIGINT", () => {
+  console.warn("SIGINT alindi, kapaniyor...");
+  try {
+    server.close(() => {
+      process.exit(0);
+    });
+  } catch {
+    process.exit(0);
+  }
+});
+
 /* =========================
    LOGIN
 ========================= */
-client.login(process.env.TOKEN);
+client.login(process.env.TOKEN).catch((err) => {
+  console.error("Discord login hatasi:", err);
+});
