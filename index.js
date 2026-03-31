@@ -16,6 +16,8 @@ const {
 } = require("@discordjs/voice");
 
 const { createCanvas, loadImage } = require("canvas");
+const fs = require("fs");
+const path = require("path");
 const express = require("express");
 
 /* =========================
@@ -97,89 +99,229 @@ function canUseManageChannels(member) {
   return member.permissions.has(PermissionsBitField.Flags.ManageChannels);
 }
 
-function getShipStatus(percent) {
-  if (percent >= 90) return "Mukemmel uyum";
-  if (percent >= 70) return "Cok iyi gidiyor";
-  if (percent >= 50) return "Fena degil";
-  if (percent >= 25) return "Olabilir";
-  return "Biraz zayif";
-}
-
 function roundRect(ctx, x, y, w, h, r) {
+  const radius = Math.min(r, w / 2, h / 2);
   ctx.beginPath();
-  ctx.moveTo(x + r, y);
-  ctx.lineTo(x + w - r, y);
-  ctx.quadraticCurveTo(x + w, y, x + w, y + r);
-  ctx.lineTo(x + w, y + h - r);
-  ctx.quadraticCurveTo(x + w, y + h, x + w - r, y + h);
-  ctx.lineTo(x + r, y + h);
-  ctx.quadraticCurveTo(x, y + h, x, y + h - r);
-  ctx.lineTo(x, y + r);
-  ctx.quadraticCurveTo(x, y, x + r, y);
+  ctx.moveTo(x + radius, y);
+  ctx.lineTo(x + w - radius, y);
+  ctx.quadraticCurveTo(x + w, y, x + w, y + radius);
+  ctx.lineTo(x + w, y + h - radius);
+  ctx.quadraticCurveTo(x + w, y + h, x + w - radius, y + h);
+  ctx.lineTo(x + radius, y + h);
+  ctx.quadraticCurveTo(x, y + h, x, y + h - radius);
+  ctx.lineTo(x, y + radius);
+  ctx.quadraticCurveTo(x, y, x + radius, y);
   ctx.closePath();
 }
 
+function resolveShipImagePath() {
+  const assetsDir = path.join(__dirname, "assets");
+
+  if (!fs.existsSync(assetsDir)) {
+    throw new Error(`assets klasoru bulunamadi: ${assetsDir}`);
+  }
+
+  const files = fs.readdirSync(assetsDir);
+  console.log("Assets klasoru icerigi:", files);
+
+  const exactShip = files.find((file) => file.toLowerCase() === "ship.png");
+  if (exactShip) {
+    const fullPath = path.join(assetsDir, exactShip);
+    console.log("Kullanilan ship arka plan:", fullPath);
+    return fullPath;
+  }
+
+  const anyPng = files.find((file) => file.toLowerCase().endsWith(".png"));
+  if (anyPng) {
+    const fullPath = path.join(assetsDir, anyPng);
+    console.log("ship.png bulunamadi, ilk png kullaniliyor:", fullPath);
+    return fullPath;
+  }
+
+  throw new Error(`assets klasorunde png yok. Bulunan dosyalar: ${files.join(", ") || "bos"}`);
+}
+
+function drawRoundedImage(ctx, img, x, y, w, h, radius = 24) {
+  ctx.save();
+  roundRect(ctx, x, y, w, h, radius);
+  ctx.clip();
+
+  const scale = Math.max(w / img.width, h / img.height);
+  const drawWidth = img.width * scale;
+  const drawHeight = img.height * scale;
+  const drawX = x + (w - drawWidth) / 2;
+  const drawY = y + (h - drawHeight) / 2;
+
+  ctx.drawImage(img, drawX, drawY, drawWidth, drawHeight);
+  ctx.restore();
+}
+
+function drawVerticalFill(ctx, x, y, w, h, percent) {
+  // iç padding: görseldeki boş barın içine otursun diye
+  const padX = Math.max(8, Math.round(w * 0.08));
+  const padTop = Math.max(10, Math.round(h * 0.07));
+  const padBottom = Math.max(10, Math.round(h * 0.03));
+
+  const innerX = x + padX;
+  const innerY = y + padTop;
+  const innerW = w - padX * 2;
+  const innerH = h - padTop - padBottom;
+
+  const fillH = Math.max(0, Math.round((innerH * percent) / 100));
+  const fillY = innerY + (innerH - fillH);
+
+  if (fillH > 0) {
+    const grad = ctx.createLinearGradient(innerX, innerY, innerX, innerY + innerH);
+    grad.addColorStop(0, "#5b0013");
+    grad.addColorStop(0.45, "#7c0820");
+    grad.addColorStop(1, "#b50020");
+
+    ctx.save();
+    roundRect(ctx, innerX, innerY, innerW, innerH, Math.max(12, Math.round(innerW * 0.18)));
+    ctx.clip();
+
+    ctx.fillStyle = grad;
+    ctx.fillRect(innerX, fillY, innerW, fillH);
+
+    // hafif parlama
+    const gloss = ctx.createLinearGradient(innerX, fillY, innerX, fillY + fillH);
+    gloss.addColorStop(0, "rgba(255,255,255,0.18)");
+    gloss.addColorStop(0.25, "rgba(255,255,255,0.06)");
+    gloss.addColorStop(1, "rgba(255,255,255,0.00)");
+    ctx.fillStyle = gloss;
+    ctx.fillRect(innerX, fillY, innerW, fillH);
+
+    ctx.restore();
+  }
+}
+
+function drawPercentText(ctx, x, y, w, h, percent, canvasWidth) {
+  const fontSize = Math.max(28, Math.round(canvasWidth * 0.028));
+  ctx.font = `bold ${fontSize}px Arial`;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+
+  ctx.lineWidth = Math.max(3, Math.round(canvasWidth * 0.002));
+  ctx.strokeStyle = "rgba(70, 0, 0, 0.65)";
+  ctx.fillStyle = "#ffffff";
+
+  const textX = x + w / 2;
+  const textY = y + Math.max(28, h * 0.12);
+
+  ctx.strokeText(`%${percent}`, textX, textY);
+  ctx.fillText(`%${percent}`, textX, textY);
+}
+
+function drawHeartProgress(ctx, x, y, h, percent, canvasWidth) {
+  const totalHearts = 5;
+  const activeHearts = Math.max(0, Math.min(totalHearts, Math.ceil(percent / 20)));
+  const spacing = h / (totalHearts - 1);
+  const lineLen = Math.max(18, Math.round(canvasWidth * 0.02));
+  const heartFont = Math.max(24, Math.round(canvasWidth * 0.022));
+
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.font = `${heartFont}px Arial`;
+
+  for (let i = 0; i < totalHearts; i++) {
+    const cy = y + i * spacing;
+    const isActive = i < activeHearts;
+
+    ctx.strokeStyle = "rgba(255,255,255,0.95)";
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    ctx.moveTo(x, cy);
+    ctx.lineTo(x + lineLen, cy);
+    ctx.stroke();
+
+    ctx.fillStyle = isActive ? "#d91533" : "rgba(80, 0, 0, 0.45)";
+    ctx.strokeStyle = "rgba(255,255,255,0.9)";
+    ctx.lineWidth = 1.5;
+    ctx.strokeText("❤", x + lineLen + heartFont * 0.9, cy);
+    ctx.fillText("❤", x + lineLen + heartFont * 0.9, cy);
+  }
+}
+
 async function buildShipCard(user1, user2, percent) {
-  const width = 900;
-  const height = 420;
+  const backgroundPath = resolveShipImagePath();
+  const backgroundBuffer = fs.readFileSync(backgroundPath);
+  const background = await loadImage(backgroundBuffer);
+
+  const width = background.width;
+  const height = background.height;
 
   const canvas = createCanvas(width, height);
   const ctx = canvas.getContext("2d");
 
-  const background = await loadImage("./assets/ship.png");
-  const avatar1 = await loadImage(user1.displayAvatarURL({ extension: "png", size: 512 }));
-  const avatar2 = await loadImage(user2.displayAvatarURL({ extension: "png", size: 512 }));
+  const avatar1 = await loadImage(
+    user1.displayAvatarURL({ extension: "png", size: 512 })
+  );
+  const avatar2 = await loadImage(
+    user2.displayAvatarURL({ extension: "png", size: 512 })
+  );
 
   ctx.drawImage(background, 0, 0, width, height);
 
-  function drawAvatar(img, x, y, size) {
-    ctx.save();
+  // Bu oranlar senin seçtiğin PNG’ye göre ayarlandı
+  const leftBox = {
+    x: Math.round(width * 0.089),
+    y: Math.round(height * 0.247),
+    w: Math.round(width * 0.257),
+    h: Math.round(height * 0.474)
+  };
 
-    roundRect(ctx, x, y, size, size, 22);
-    ctx.clip();
-    ctx.drawImage(img, x, y, size, size);
+  const rightBox = {
+    x: Math.round(width * 0.622),
+    y: Math.round(height * 0.247),
+    w: Math.round(width * 0.257),
+    h: Math.round(height * 0.474)
+  };
 
-    ctx.restore();
-  }
+  const barBox = {
+    x: Math.round(width * 0.455),
+    y: Math.round(height * 0.221),
+    w: Math.round(width * 0.118),
+    h: Math.round(height * 0.543)
+  };
 
-  // Avatar konumları
-  drawAvatar(avatar1, 92, 96, 230);
-  drawAvatar(avatar2, 578, 96, 230);
+  // Avatarlar frame içine taşmadan otursun
+  const avatarInset = Math.max(10, Math.round(width * 0.008));
 
-  // Yüzde
-  ctx.textAlign = "center";
-  ctx.fillStyle = "#ffffff";
-  ctx.strokeStyle = "rgba(255, 105, 180, 0.65)";
-  ctx.lineWidth = 8;
-  ctx.font = "bold 56px Sans";
+  drawRoundedImage(
+    ctx,
+    avatar1,
+    leftBox.x + avatarInset,
+    leftBox.y + avatarInset,
+    leftBox.w - avatarInset * 2,
+    leftBox.h - avatarInset * 2,
+    Math.max(18, Math.round(width * 0.015))
+  );
 
-  ctx.strokeText(`%${percent}`, width / 2, 308);
-  ctx.fillText(`%${percent}`, width / 2, 308);
+  drawRoundedImage(
+    ctx,
+    avatar2,
+    rightBox.x + avatarInset,
+    rightBox.y + avatarInset,
+    rightBox.w - avatarInset * 2,
+    rightBox.h - avatarInset * 2,
+    Math.max(18, Math.round(width * 0.015))
+  );
 
-  // Alt yorum
-  const statusText = getShipStatus(percent);
-  ctx.font = "bold 28px Sans";
-  ctx.lineWidth = 6;
-  ctx.strokeText(statusText, width / 2, 344);
-  ctx.fillText(statusText, width / 2, 344);
+  // Orta bar dolumu
+  drawVerticalFill(ctx, barBox.x, barBox.y, barBox.w, barBox.h, percent);
 
-  // Progress bar
-  const barX = 145;
-  const barY = 365;
-  const barW = 610;
-  const barH = 28;
-  const fillW = Math.max(18, Math.floor((barW * percent) / 100));
+  // Yüzde yazısı
+  drawPercentText(ctx, barBox.x, barBox.y, barBox.w, barBox.h, percent, width);
 
-  const grad = ctx.createLinearGradient(barX, barY, barX + barW, barY);
-  grad.addColorStop(0, "#ff8fb8");
-  grad.addColorStop(0.5, "#ffb3d1");
-  grad.addColorStop(1, "#caa6ff");
-
-  ctx.save();
-  roundRect(ctx, barX, barY, fillW, barH, 14);
-  ctx.fillStyle = grad;
-  ctx.fill();
-  ctx.restore();
+  // Sağdaki kalp scale
+  drawHeartProgress(
+    ctx,
+    Math.round(width * 0.585),
+    Math.round(height * 0.325),
+    Math.round(height * 0.36),
+    percent,
+    width
+  );
 
   return canvas.toBuffer("image/png");
 }
@@ -188,7 +330,7 @@ async function buildShipCard(user1, user2, percent) {
    READY
 ========================= */
 client.once("clientReady", async () => {
-  console.log(`${client.user.tag} olarak giriş yapıldı.`);
+  console.log(`${client.user.tag} olarak giriş yapildi.`);
 
   client.user.setPresence({
     activities: [{ name: "eglence zamani" }],
@@ -209,7 +351,7 @@ client.once("clientReady", async () => {
           selfMute: false
         });
 
-        console.log(`Otomatik olarak ${channel.name} kanalına katıldı.`);
+        console.log(`Otomatik olarak ${channel.name} kanalina katildi.`);
       }
     } catch (err) {
       console.error("Auto join voice hatasi:", err);
